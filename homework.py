@@ -51,7 +51,7 @@ def send_message(message):
 
 
 def main():
-    current_timestamp = 0  # Начальное значение timestamp
+    current_timestamp = int(time.time())  # Начальное значение timestamp
     logger.debug('Бот запущен')
     while True:
         try:
