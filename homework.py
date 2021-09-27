@@ -6,13 +6,10 @@ import time
 from dotenv import load_dotenv
 import requests
 import telegram
-from telegram.error import Unauthorized
-
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 logger.setLevel(logging.DEBUG)
-logger.addHandler(FileHandler('main.log'))
+logger.addHandler(FileHandler(__file__ + '.log'))
 logger.addHandler(StreamHandler())
 
 load_dotenv()
@@ -25,25 +22,51 @@ REQUEST_PERIOD = 5 * 60
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
-headers = {'Authorization': f'OAuth {PRAKTIKUM_TOKEN}'}
+HEADERS = {'Authorization': f'OAuth {PRAKTIKUM_TOKEN}'}
+VERDICTS = {'rejected': 'К сожалению, в работе нашлись ошибки.',
+            'approved': 'Ревьюеру всё понравилось, работа зачтена!',
+            'reviewing': 'Работа {homework_name} взята в ревью'}
+REVIEW_STATUS = 'У вас проверили работу "{homework_name}"!\n\n{verdict}'
+INVALID_STATUS = 'Неожиданный статус {status}'
+SERVER_FAILURE = ('Отказ сервера, {status_code}, '
+                  '{server_problem}''параметры запроса {params}')
+NET_WORK_PROBLEMS = 'Сбой сети'
+LOGGER_MESSAGE = {'bot_started': 'Бот запущен',
+                  'unknown_status': 'Статус работы неизвестен',
+                  'sent_message': 'Отправлено сообщение {message}',
+                  'bot_fell': 'Бот упал с ошибкой {mistake}'}
 
 
 def parse_homework_status(homework):
-    homework_name = homework['homework_name']
-    if homework['status'] == 'rejected':
-        verdict = 'К сожалению, в работе нашлись ошибки.'
+    if homework['status'] not in VERDICTS:
+        raise ValueError(INVALID_STATUS.format(
+            status=homework['status']))
+    elif homework['status'] == 'reviewing':
+        return VERDICTS[homework['status']].format(
+            homework_name=homework['homework_name'])
     else:
-        verdict = 'Ревьюеру всё понравилось, работа зачтена!'
-    return f'У вас проверили работу "{homework_name}"!\n\n{verdict}'
+        return REVIEW_STATUS.format(homework_name=homework['homework_name'],
+                                    verdict=VERDICTS[homework['status']])
 
 
 def get_homeworks(current_timestamp):
-    homework_statues = requests.get(
-        URL,
-        headers=headers,
-        params={'from_date': current_timestamp}
-    )
-    return homework_statues.json()
+    try:
+        homework_statues = requests.get(
+            URL,
+            headers=HEADERS,
+            params={'from_date': current_timestamp}
+        )
+        for server_problem in ['code', 'error']:
+            if server_problem in homework_statues.json():
+                raise Exception(SERVER_FAILURE[0].format(
+                    status_code=homework_statues.status_code,
+                    server_problem=server_problem,
+                    params=current_timestamp)
+                )
+    except ConnectionError:
+        raise ConnectionError(NET_WORK_PROBLEMS)
+    else:
+        return homework_statues.json()
 
 
 def send_message(message):
@@ -52,31 +75,29 @@ def send_message(message):
 
 def main():
     current_timestamp = int(time.time())  # Начальное значение timestamp
-    logger.debug('Бот запущен')
+    logger.debug(LOGGER_MESSAGE['bot_started'])
     while True:
         try:
+            homeworks, current_date = get_homeworks(
+                current_timestamp).values()
             # Получить статус проверки работы
-            homework_status = get_homeworks(
-                current_timestamp).get('homeworks')
+            homework_status = homeworks
+            current_timestamp = current_date
             # Если работа не проверена список пустой
-            if len(homework_status) == 0:
-                logger.info('Статус работы не известен')
-                time.sleep(REQUEST_PERIOD)  # Опрашивать раз в пять минут
+            if not homework_status:
+                logger.info(LOGGER_MESSAGE['unknown_status'])
             else:  # Иначе работа проверена
                 # Последний ответ по статусу работы
                 homework = homework_status[0]
                 message = parse_homework_status(homework)
                 send_message(message)
-                logger.info(f'Отправлено сообщение: {message}')
-                current_timestamp = int(time.time())
-        except Unauthorized:
-            logger.exception('Бот остановлен пользователем')
+                logger.info(LOGGER_MESSAGE['sent_message'].format(
+                    message=message))
+            time.sleep(REQUEST_PERIOD)  # Опрашивать раз в пять минут
+        except Exception:
+            logger.exception(LOGGER_MESSAGE['bot_fell'].format(
+                mistake=Exception))
             time.sleep(REQUEST_PERIOD)
-        except Exception as e:
-            logger.exception(f'Бот упал с ошибкой: {e}')
-            send_message(f'Бот упал с ошибкой: {e}')
-            logger.info(f'Отправлено сообщение об ошибке {e}')
-            time.sleep(10)
 
 
 if __name__ == '__main__':
