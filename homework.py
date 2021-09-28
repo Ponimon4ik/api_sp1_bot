@@ -5,6 +5,7 @@ import time
 
 from dotenv import load_dotenv
 import requests
+from requests.exceptions import RequestException
 import telegram
 
 logger = logging.getLogger(__name__)
@@ -25,28 +26,32 @@ bot = telegram.Bot(token=TELEGRAM_TOKEN)
 HEADERS = {'Authorization': f'OAuth {PRAKTIKUM_TOKEN}'}
 VERDICTS = {'rejected': 'К сожалению, в работе нашлись ошибки.',
             'approved': 'Ревьюеру всё понравилось, работа зачтена!',
-            'reviewing': 'Работа {homework_name} взята в ревью'}
-REVIEW_STATUS = 'У вас проверили работу "{homework_name}"!\n\n{verdict}'
+            'reviewing': 'Работа {name} взята в ревью'}
+CHECKING_HOMEWORK = 'reviewing'
+REVIEW_STATUS = 'У вас проверили работу "{name}"!\n\n{verdict}'
 INVALID_STATUS = 'Неожиданный статус {status}'
-SERVER_FAILURE = ('Отказ сервера, {status_code}, '
-                  '{server_problem}''параметры запроса {params}')
-NET_WORK_PROBLEMS = 'Сбой сети'
-LOGGER_MESSAGE = {'bot_started': 'Бот запущен',
-                  'unknown_status': 'Статус работы неизвестен',
-                  'sent_message': 'Отправлено сообщение {message}',
-                  'bot_fell': 'Бот упал с ошибкой {mistake}'}
+SERVER_FAILURE = ('Отказ сервера {text} '
+                  'параметры запроса: URL{URL}; '
+                  'headers - {headers}; params - {params}')
+NET_WORK_PROBLEMS = ('Сбой сети {text} '
+                     'параметры запроса: URL - {url}; '
+                     'headers - {headers}; params - {params}')
+LOG_BOT_STARTED = 'Бот запущен'
+LOG_BOT_FELL = 'Бот упал с ошибкой {mistake}'
+LOG_SENT_MESSAGE = 'Отправлено сообщение {message}'
+LOG_UNKNOW_STATUS = 'Статус работы неизвестен'
 
 
 def parse_homework_status(homework):
-    if homework['status'] not in VERDICTS:
-        raise ValueError(INVALID_STATUS.format(
-            status=homework['status']))
-    elif homework['status'] == 'reviewing':
-        return VERDICTS[homework['status']].format(
-            homework_name=homework['homework_name'])
-    else:
-        return REVIEW_STATUS.format(homework_name=homework['homework_name'],
-                                    verdict=VERDICTS[homework['status']])
+    status_homework = homework['status']
+    if status_homework not in VERDICTS:
+        raise ValueError(INVALID_STATUS.format(status=status_homework))
+    name_homework = homework['homework_name']
+    message = REVIEW_STATUS.format(name=name_homework,
+                                   verdict=VERDICTS[status_homework])
+    if status_homework == CHECKING_HOMEWORK:
+        message = VERDICTS[status_homework].format(name=name_homework)
+    return message
 
 
 def get_homeworks(current_timestamp):
@@ -56,17 +61,18 @@ def get_homeworks(current_timestamp):
             headers=HEADERS,
             params={'from_date': current_timestamp}
         )
-        for server_problem in ['code', 'error']:
-            if server_problem in homework_statues.json():
-                raise Exception(SERVER_FAILURE[0].format(
-                    status_code=homework_statues.status_code,
-                    server_problem=server_problem,
-                    params=current_timestamp)
-                )
-    except ConnectionError:
-        raise ConnectionError(NET_WORK_PROBLEMS)
-    else:
-        return homework_statues.json()
+    except RequestException:
+        raise ConnectionError(NET_WORK_PROBLEMS.format(
+            text=RequestException, url=URL,
+            headers=HEADERS, params=current_timestamp))
+    response = homework_statues.json()
+    for server_problem in ['code', 'error']:
+        if server_problem in response:
+            raise Exception(SERVER_FAILURE[0].format(
+                text=response[server_problem], url=URL,
+                headers=HEADERS, params=current_timestamp)
+            )
+    return response
 
 
 def send_message(message):
@@ -74,29 +80,25 @@ def send_message(message):
 
 
 def main():
-    current_timestamp = int(time.time())  # Начальное значение timestamp
-    logger.debug(LOGGER_MESSAGE['bot_started'])
+    current_timestamp = 0#int(time.time())  # Начальное значение timestamp
+    logger.debug(LOG_BOT_STARTED)
     while True:
         try:
-            homeworks, current_date = get_homeworks(
-                current_timestamp).values()
             # Получить статус проверки работы
-            homework_status = homeworks
-            current_timestamp = current_date
-            # Если работа не проверена список пустой
+            homework_status = get_homeworks(
+                current_timestamp)
+            logger.debug(homework_status)
+            current_timestamp = homework_status['current_date']
             if not homework_status:
-                logger.info(LOGGER_MESSAGE['unknown_status'])
-            else:  # Иначе работа проверена
-                # Последний ответ по статусу работы
-                homework = homework_status[0]
+                continue
+            else:
+                homework = homework_status['homeworks'][0]
                 message = parse_homework_status(homework)
                 send_message(message)
-                logger.info(LOGGER_MESSAGE['sent_message'].format(
-                    message=message))
+                logger.info(LOG_SENT_MESSAGE.format(message=message))
             time.sleep(REQUEST_PERIOD)  # Опрашивать раз в пять минут
         except Exception:
-            logger.exception(LOGGER_MESSAGE['bot_fell'].format(
-                mistake=Exception))
+            logger.exception(LOG_BOT_FELL.format(mistake=Exception))
             time.sleep(REQUEST_PERIOD)
 
 
