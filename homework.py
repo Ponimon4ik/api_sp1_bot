@@ -1,6 +1,7 @@
 import logging
 from logging import FileHandler, StreamHandler
 import os
+import sys
 import time
 
 from dotenv import load_dotenv
@@ -20,9 +21,6 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 URL = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 REQUEST_PERIOD = 5 * 60
-
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
-
 HEADERS = {'Authorization': f'OAuth {PRAKTIKUM_TOKEN}'}
 VERDICTS = {'rejected': 'К сожалению, в работе нашлись ошибки.',
             'approved': 'Ревьюеру всё понравилось, работа зачтена!',
@@ -33,13 +31,14 @@ INVALID_STATUS = 'Неожиданный статус {status}'
 SERVER_FAILURE = ('Отказ сервера {text} '
                   'параметры запроса: URL{URL}; '
                   'headers - {headers}; params - {params}')
-NET_WORK_PROBLEMS = ('Сбой сети {text} '
+NET_WORK_PROBLEMS = ('Сбой сети {type_exception} {text} '
                      'параметры запроса: URL - {url}; '
                      'headers - {headers}; params - {params}')
 LOG_BOT_STARTED = 'Бот запущен'
-LOG_BOT_FELL = 'Бот упал с ошибкой {mistake}'
+LOG_BOT_FELL = 'Бот упал с ошибкой {type_exception} {mistake}'
 LOG_SENT_MESSAGE = 'Отправлено сообщение {message}'
-LOG_UNKNOW_STATUS = 'Статус работы неизвестен'
+
+bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
 
 def parse_homework_status(homework):
@@ -62,9 +61,10 @@ def get_homeworks(current_timestamp):
             params={'from_date': current_timestamp}
         )
     except RequestException:
+        type_exception, exception_text = sys.exc_info()[:2]
         raise ConnectionError(NET_WORK_PROBLEMS.format(
-            text=RequestException, url=URL,
-            headers=HEADERS, params=current_timestamp))
+            type_exception=type_exception, text=exception_text,
+            url=URL, headers=HEADERS, params=current_timestamp))
     response = homework_statues.json()
     for server_problem in ['code', 'error']:
         if server_problem in response:
@@ -80,26 +80,25 @@ def send_message(message):
 
 
 def main():
-    current_timestamp = 0#int(time.time())  # Начальное значение timestamp
+    current_timestamp = int(time.time())
     logger.debug(LOG_BOT_STARTED)
     while True:
+        time.sleep(REQUEST_PERIOD)
         try:
-            # Получить статус проверки работы
-            homework_status = get_homeworks(
-                current_timestamp)
-            logger.debug(homework_status)
-            current_timestamp = homework_status['current_date']
-            if not homework_status:
+            response = get_homeworks(current_timestamp)
+            current_timestamp = response['current_date']
+            homework = response['homeworks']
+            if not homework:
                 continue
             else:
-                homework = homework_status['homeworks'][0]
-                message = parse_homework_status(homework)
+                message = parse_homework_status(homework[0])
                 send_message(message)
                 logger.info(LOG_SENT_MESSAGE.format(message=message))
-            time.sleep(REQUEST_PERIOD)  # Опрашивать раз в пять минут
         except Exception:
-            logger.exception(LOG_BOT_FELL.format(mistake=Exception))
-            time.sleep(REQUEST_PERIOD)
+            type_exception, exception_text = sys.exc_info()[:2]
+            logger.exception(LOG_BOT_FELL.format(type_exception=type_exception,
+                                                 mistake=exception_text)
+                             )
 
 
 if __name__ == '__main__':
