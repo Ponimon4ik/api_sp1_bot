@@ -1,13 +1,12 @@
 import logging
-from logging import FileHandler, StreamHandler
 import os
-import sys
 import time
+from logging import FileHandler, StreamHandler
 
-from dotenv import load_dotenv
 import requests
-from requests.exceptions import RequestException
 import telegram
+from dotenv import load_dotenv
+from requests.exceptions import RequestException
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -22,20 +21,19 @@ CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 URL = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 REQUEST_PERIOD = 5 * 60
 HEADERS = {'Authorization': f'OAuth {PRAKTIKUM_TOKEN}'}
-VERDICTS = {'rejected': 'К сожалению, в работе нашлись ошибки.',
-            'approved': 'Ревьюеру всё понравилось, работа зачтена!',
-            'reviewing': 'Работа {name} взята в ревью'}
-CHECKING_HOMEWORK = 'reviewing'
-REVIEW_STATUS = 'У вас проверили работу "{name}"!\n\n{verdict}'
+NOTIFICATION = 'У вас проверили работу "{name}"!\n\n'
+HOMEWORK_STATUSES = {
+    'rejected': (NOTIFICATION + 'К сожалению, в работе нашлись ошибки.'),
+    'approved': (NOTIFICATION + 'Ревьюеру всё понравилось, работа зачтена!'),
+    'reviewing': 'Работа {name} взята в ревью', }
 INVALID_STATUS = 'Неожиданный статус {status}'
-SERVER_FAILURE = ('Отказ сервера {text} '
-                  'параметры запроса: URL{URL}; '
+SERVER_FAILURE = ('Отказ сервера {key} {text} '
+                  'параметры запроса: URL - {url}; '
                   'headers - {headers}; params - {params}')
-NET_WORK_PROBLEMS = ('Сбой сети {type_exception} {text} '
-                     'параметры запроса: URL - {url}; '
+NET_WORK_PROBLEMS = ('Сбой сети {mistake} параметры запроса: URL - {url}; '
                      'headers - {headers}; params - {params}')
 LOG_BOT_STARTED = 'Бот запущен'
-LOG_BOT_FELL = 'Бот упал с ошибкой {type_exception} {mistake}'
+LOG_BOT_FELL = 'Бот упал с ошибкой {mistake}'
 LOG_SENT_MESSAGE = 'Отправлено сообщение {message}'
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
@@ -43,35 +41,28 @@ bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
 def parse_homework_status(homework):
     status_homework = homework['status']
-    if status_homework not in VERDICTS:
+    if status_homework not in HOMEWORK_STATUSES:
         raise ValueError(INVALID_STATUS.format(status=status_homework))
     name_homework = homework['homework_name']
-    message = REVIEW_STATUS.format(name=name_homework,
-                                   verdict=VERDICTS[status_homework])
-    if status_homework == CHECKING_HOMEWORK:
-        message = VERDICTS[status_homework].format(name=name_homework)
-    return message
+    message = HOMEWORK_STATUSES[status_homework]
+    return message.format(name=name_homework)
 
 
 def get_homeworks(current_timestamp):
+    request_parameters = dict(
+        url=URL, headers=HEADERS, params={'from_date': current_timestamp}
+    )
     try:
-        homework_statues = requests.get(
-            URL,
-            headers=HEADERS,
-            params={'from_date': current_timestamp}
-        )
-    except RequestException:
-        type_exception, exception_text = sys.exc_info()[:2]
+        homework_statues = requests.get(**request_parameters)
+    except RequestException as mistake:
         raise ConnectionError(NET_WORK_PROBLEMS.format(
-            type_exception=type_exception, text=exception_text,
-            url=URL, headers=HEADERS, params=current_timestamp))
+            mistake=mistake, **request_parameters))
     response = homework_statues.json()
     for server_problem in ['code', 'error']:
         if server_problem in response:
-            raise Exception(SERVER_FAILURE[0].format(
-                text=response[server_problem], url=URL,
-                headers=HEADERS, params=current_timestamp)
-            )
+            raise Warning(SERVER_FAILURE.format(
+                key=server_problem, text=response[server_problem],
+                **request_parameters))
     return response
 
 
@@ -83,22 +74,22 @@ def main():
     current_timestamp = int(time.time())
     logger.debug(LOG_BOT_STARTED)
     while True:
-        time.sleep(REQUEST_PERIOD)
         try:
             response = get_homeworks(current_timestamp)
-            current_timestamp = response['current_date']
             homework = response['homeworks']
             if not homework:
                 continue
-            else:
-                message = parse_homework_status(homework[0])
-                send_message(message)
-                logger.info(LOG_SENT_MESSAGE.format(message=message))
-        except Exception:
-            type_exception, exception_text = sys.exc_info()[:2]
-            logger.exception(LOG_BOT_FELL.format(type_exception=type_exception,
-                                                 mistake=exception_text)
-                             )
+            message = parse_homework_status(homework[0])
+            send_message(message)
+            logger.info(LOG_SENT_MESSAGE.format(message=message))
+            current_date = response.get('current_date')
+            if current_date is None:
+                continue
+            current_timestamp = current_date
+        except Exception as exception_text:
+            logger.exception(LOG_BOT_FELL.format(mistake=exception_text))
+        finally:
+            time.sleep(REQUEST_PERIOD)
 
 
 if __name__ == '__main__':
