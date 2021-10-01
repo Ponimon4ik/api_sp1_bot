@@ -22,7 +22,7 @@ URL = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 REQUEST_PERIOD = 5 * 60
 HEADERS = {'Authorization': f'OAuth {PRAKTIKUM_TOKEN}'}
 NOTIFICATION = 'У вас проверили работу "{name}"!\n\n'
-HOMEWORK_STATUSES = {
+VERDICTS = {
     'rejected': (NOTIFICATION + 'К сожалению, в работе нашлись ошибки.'),
     'approved': (NOTIFICATION + 'Ревьюеру всё понравилось, работа зачтена!'),
     'reviewing': 'Работа {name} взята в ревью', }
@@ -33,19 +33,18 @@ SERVER_FAILURE = ('Отказ сервера {key} {text} '
 NET_WORK_PROBLEMS = ('Сбой сети {mistake} параметры запроса: URL - {url}; '
                      'headers - {headers}; params - {params}')
 LOG_BOT_STARTED = 'Бот запущен'
-LOG_BOT_FELL = 'Бот упал с ошибкой {mistake}'
+LOG_BOT_PROBLEMS = 'При работе Бота возникла ошибка {mistake}'
 LOG_SENT_MESSAGE = 'Отправлено сообщение {message}'
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
 
 def parse_homework_status(homework):
-    status_homework = homework['status']
-    if status_homework not in HOMEWORK_STATUSES:
-        raise ValueError(INVALID_STATUS.format(status=status_homework))
-    name_homework = homework['homework_name']
-    message = HOMEWORK_STATUSES[status_homework]
-    return message.format(name=name_homework)
+    status = homework['status']
+    if status not in VERDICTS:
+        raise ValueError(INVALID_STATUS.format(status=status))
+    message = VERDICTS[status]
+    return message.format(name=homework['homework_name'])
 
 
 def get_homeworks(current_timestamp):
@@ -60,7 +59,7 @@ def get_homeworks(current_timestamp):
     response = homework_statues.json()
     for server_problem in ['code', 'error']:
         if server_problem in response:
-            raise Warning(SERVER_FAILURE.format(
+            raise RuntimeError(SERVER_FAILURE.format(
                 key=server_problem, text=response[server_problem],
                 **request_parameters))
     return response
@@ -82,15 +81,13 @@ def main():
             message = parse_homework_status(homework[0])
             send_message(message)
             logger.info(LOG_SENT_MESSAGE.format(message=message))
-            current_date = response.get('current_date')
-            if current_date is None:
-                continue
-            current_timestamp = current_date
-        except Exception as exception_text:
-            logger.exception(LOG_BOT_FELL.format(mistake=exception_text))
+            current_timestamp = response.get('current_date', current_timestamp)
+        except Exception as mistake:
+            logger.exception(LOG_BOT_PROBLEMS.format(mistake=mistake))
         finally:
             time.sleep(REQUEST_PERIOD)
 
 
 if __name__ == '__main__':
     main()
+
